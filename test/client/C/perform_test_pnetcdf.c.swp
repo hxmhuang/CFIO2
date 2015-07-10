@@ -1,0 +1,194 @@
+/****************************************************************************
+ *       Filename:  perform_test.c
+ *
+ *    Description:  
+ *
+ *        Version:  1.0
+ *        Created:  08/26/2012 10:09:11 AM
+ *       Revision:  none
+ *       Compiler:  gcc
+ *
+ *         Author:  Wang Wencan 
+ *	    Email:  never.wencan@gmail.com
+ *        Company:  HPC Tsinghua
+ ***************************************************************************/
+#include <stdio.h>
+#include <assert.h>
+
+#include "mpi.h"
+#include "debug.h"
+#include "pnetcdf.h"
+#include "times.h"
+#include "test_def.h"
+
+int main(int argc, char** argv)
+{
+    int rank, size;
+    char *path = "./output/test";
+    int ncidp;
+    int dim1,var1,i, j, l;
+    MPI_Info info;
+    int ret;
+    int extra;
+    int itr, valn;
+    int sleep_ms_per_itr; 
+    MPI_Group group, server_group;
+    MPI_Comm server_comm;
+
+    int LAT_PROC, LON_PROC;
+    MPI_Offset start[2],count[2];
+    int *var;
+    char var_name[16];
+    double compute_time = 0.0, IO_time = 0.0;
+    int *ranks;
+
+    size_t len = 10;
+    volatile double a;
+    MPI_Comm comm = MPI_COMM_WORLD;
+
+    if(8 != argc)
+    {
+	printf("Usage : perform_test_pnetcdf LAT_PROC LON_PROC output_dir extra_proc itr sleep_ms_per_itr valn\n");
+	return -1;
+    }
+
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+    
+    times_init();
+    
+    LAT_PROC = atoi(argv[1]);
+    LON_PROC = atoi(argv[2]);
+    extra = atoi(argv[4]);
+    itr = atoi(argv[5]);
+    sleep_ms_per_itr = atoi(argv[6]);
+    valn = atoi(argv[7]);
+    var = malloc(sizeof(int) * valn);
+
+    // print args
+    if (0 == rank) {
+	printf("LAT = %d \n LON = %d \n VALN = %d \n LAT_PROC = %d \n LON_PROC = %d \n ITR = %d \n SLEEP_TIME = %d \n SLEEP_MS_PER_ITR = %d \n ", 
+		LAT, LON, valn, LAT_PROC, LON_PROC, itr, SLEEP_TIME, sleep_ms_per_itr);
+    }
+    
+    assert(size == LAT_PROC * LON_PROC + extra);
+   
+    if(extra > 0)
+    {
+	size = LAT_PROC * LON_PROC;
+
+	ranks = malloc(size * sizeof(int));
+	for(i = 0; i < size; i ++)
+	{
+	    ranks[i] = i + extra;
+	}
+	MPI_Comm_group(MPI_COMM_WORLD, &group);
+	MPI_Group_incl(group, size, ranks, &server_group);
+	MPI_Comm_create(MPI_COMM_WORLD, server_group, &comm);
+	free(ranks);
+    }else
+    {
+	comm = MPI_COMM_WORLD;
+    }
+
+    if(rank >= extra)
+    {
+	MPI_Comm_rank(comm, &rank);
+	MPI_Comm_size(comm, &size);
+	// printf("rank : %d, size : %d\n", rank, size);
+	//set_debug_mask(DEBUG_USER | DEBUG_MSG | DEBUG_CFIO | DEBUG_ID); 
+	//set_debug_mask(DEBUG_ID); 
+	//set_debug_mask(DEBUG_USER); 
+	start[0] = (rank % LAT_PROC) * (LAT / LAT_PROC);
+	start[1] = (rank / LAT_PROC) * (LON / LON_PROC);
+	count[0] = LAT / LAT_PROC;
+	count[1] = LON / LON_PROC;
+	/*line*/
+	//start[0] = 239;
+	//start[1] = rank * 144;
+	//count[0] = 1444 ;
+	//count[1] = 146;
+	/*row*/
+	//start[0] = rank * (LAT / size);
+	//start[1] = 0;
+	//count[0] = LAT /size;
+	//count[1] = LON;
+	double *fp = malloc(count[0] * count[1] *sizeof(double));
+
+	for( i = 0; i< count[0] * count[1]; i++)
+	{
+	    fp[i] = i + rank * count[0] * count[1];
+	}
+
+	times_start();
+
+	for(i = 0; i < itr; i ++)
+	{
+	    // printf ("proc %d itr %d \n", rank, i);
+	    times_start(); // compute_time
+	    if( SLEEP_TIME != 0)
+	    {
+		struct timeval sleep_begin, sleep_end;
+		// simulate computation of sleep_ms_per_itr ms
+		gettimeofday(&sleep_begin, NULL);
+		do {
+		    gettimeofday(&sleep_end, NULL);
+		} while ((sleep_end.tv_sec - sleep_begin.tv_sec) * 1000 + (sleep_end.tv_usec - sleep_begin.tv_usec) / 1000 < sleep_ms_per_itr);
+	    }
+	    compute_time += times_end();
+	    // printf ("proc %d itr %d %f \n", rank, i, compute_time);
+
+	    times_start(); // IO_time
+	    char fileName[100];
+	    sprintf(fileName,"%s/pnetcdf-%d.nc", argv[3], i);
+	    int dimids[2];
+	    debug_mark(DEBUG_USER);
+	    MPI_Info_create(&info);
+	    //MPI_Info_set(info, "romio_ds_write", "disable");
+	    //MPI_Info_set(info, "ind_wr_buffer_size", "16777216");
+	    debug_mark(DEBUG_USER);
+	    //ncmpi_create(MPI_COMM_WORLD, fileName, NC_64BIT_OFFSET, info, &ncidp);
+	    // printf("proc %d ncmpi_create \n", rank);
+	    ncmpi_create(comm, fileName, NC_64BIT_OFFSET, MPI_INFO_NULL, &ncidp);
+	    debug_mark(DEBUG_USER);
+	    int lat = LAT, lon = LON;
+	    // printf("proc %d ncmpi_def_dim\n", rank);
+	    ncmpi_def_dim(ncidp, "lat", lat, &dimids[0]);
+	    ncmpi_def_dim(ncidp, "lon", lon, &dimids[1]);
+
+	    // printf("proc %d ncmpi_def_var\n", rank);
+	    for(j = 0; j < valn; j++)
+	    {
+		sprintf(var_name, "time_v%d", j);
+		ncmpi_def_var(ncidp,var_name, NC_DOUBLE, 2,dimids, &var[j]);
+	    }
+	    debug_mark(DEBUG_USER);
+	    // printf("proc %d ncmpi_enddef \n", rank);
+	    ncmpi_enddef(ncidp);
+
+	    debug_mark(DEBUG_USER);
+	    // printf("proc %d ncmpi_put_vara_double_all\n", rank);
+	    for(j = 0; j < valn; j++)
+	    {
+		ret = ncmpi_put_vara_double_all(ncidp,var[j], start, count,fp);
+		// printf("%s\n", ncmpi_strerror(ret));
+	    }
+	    debug_mark(DEBUG_USER);
+
+	    // printf("proc %d ncmpi_close\n", rank);
+	    ncmpi_close(ncidp);
+	    IO_time += times_end();
+	}
+
+	free(fp);
+	printf("proc %d total time : %f\n", rank, times_end());
+	printf("proc %d compute time : %f\n", rank, compute_time);
+	printf("proc %d IO time : %f\n", rank, IO_time);
+    }
+    free(var);
+    MPI_Finalize();
+    times_final();
+    return 0;
+}
+
